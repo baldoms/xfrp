@@ -149,6 +149,7 @@ size_t encrypt_data(const unsigned char *src_data, size_t srclen, struct frp_cod
 
 	int outlen = 0, tmplen = 0;
 	struct frp_coder *c = encoder;
+#if (OPENSSL_VERSION_NUMBER < 0x1010102fL)
 	EVP_CIPHER_CTX ctx;
 	EVP_CIPHER_CTX_init(&ctx);
 	EVP_EncryptInit_ex(&ctx, EVP_aes_128_cfb(), NULL, c->key, c->iv);
@@ -164,6 +165,23 @@ size_t encrypt_data(const unsigned char *src_data, size_t srclen, struct frp_cod
 
 	outlen += tmplen;
 	EVP_CIPHER_CTX_cleanup(&ctx);
+#else
+	EVP_CIPHER_CTX *ctx;
+	ctx = EVP_CIPHER_CTX_new();
+	EVP_EncryptInit_ex(ctx, EVP_aes_128_cfb(), NULL, c->key, c->iv);
+	if(!EVP_EncryptUpdate(ctx, outbuf, &outlen, intext, (int)srclen)){
+		debug(LOG_ERR, "EVP_EncryptUpdate error!");
+		goto E_END;
+	}
+
+	if(!EVP_EncryptFinal_ex(ctx, outbuf+outlen, &tmplen)){
+		debug(LOG_ERR, "EVP_EncryptFinal_ex error!");
+		goto E_END;
+	}
+
+	outlen += tmplen;
+	EVP_CIPHER_CTX_free(ctx);
+#endif
 
 #ifdef ENC_DEBUG
 	int j = 0;
@@ -188,6 +206,9 @@ size_t encrypt_data(const unsigned char *src_data, size_t srclen, struct frp_cod
 
 E_END:
 	free(intext);
+#if(OPENSSL_VERSION_NUMBER >= 0x1010102fL)
+	EVP_CIPHER_CTX_free(ctx);	
+#endif
 	return outlen;
 }
 
@@ -203,6 +224,7 @@ size_t decrypt_data(const unsigned char *enc_data, size_t enc_len, struct frp_co
 
 	int outlen = 0, tmplen = 0;
 	struct frp_coder *c = decoder;
+#if (OPENSSL_VERSION_NUMBER < 0x1010102fL)
 	EVP_CIPHER_CTX ctx;
 	EVP_CIPHER_CTX_init(&ctx);
 	EVP_DecryptInit_ex(&ctx, EVP_aes_128_cfb(), NULL, c->key, c->iv);
@@ -235,6 +257,39 @@ size_t decrypt_data(const unsigned char *enc_data, size_t enc_len, struct frp_co
 
 	totol_len += tmplen;
 	EVP_CIPHER_CTX_cleanup(&ctx);
+#else
+	EVP_CIPHER_CTX *ctx;
+	ctx = EVP_CIPHER_CTX_new();
+	EVP_DecryptInit_ex(ctx, EVP_aes_128_cfb(), NULL, c->key, c->iv);
+	EVP_CIPHER_CTX_set_padding(ctx, 0);
+
+	int loop_times = enc_len / 10;
+	int latest_len = enc_len % 10;
+	int i = 0;
+	int totol_len = 0;
+	int enc_per_len;
+	for(i = 0; i <= loop_times; i++) {
+		if( i == loop_times) {
+			enc_per_len = latest_len;
+		} else {
+			enc_per_len = 10;
+		}
+		
+		if(!EVP_DecryptUpdate(ctx, outbuf + (i * 10), &outbuf, inbuf + (i * 10), enc_per_len)) {
+			debug(LOG_ERR, "EVP_DecryptUpdate error!");
+			goto D_END;
+		}
+		totol_len += outlen;
+	}
+
+	if(!EVP_DecryptFinal_ex(ctx, outbuf + totol_len, &tmplen)) {
+		debug(LOG_ERR, "EVP_DecryptFinal_ex error");
+		goto D_END;
+	}
+
+	totol_len += tmplen;
+	EVP_CIPHER_CTX_free(ctx);
+#endif
 
 #ifdef ENC_DEBUG
 	debug(LOG_DEBUG, "DEC_LEN:%lu", enc_len);
@@ -267,6 +322,9 @@ size_t decrypt_data(const unsigned char *enc_data, size_t enc_len, struct frp_co
 #endif //ENC_DEBUG
 
 D_END:
+#if (OPENSSL_VERSION_NUMBER < 0x1010102fL)
+	EVP_CIPHER_CTX_free(ctx);
+#endif
 	return totol_len;
 }
 
